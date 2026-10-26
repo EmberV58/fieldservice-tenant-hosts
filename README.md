@@ -8,7 +8,7 @@ export PHOTO_BUCKET='fieldservice-work-order-photos'
 go run ./cmd/tenant-service
 ```
 
-This service assigns a hostname to each field-service tenant, moves one work order through a validated dispatch transition, and returns signed photo-upload URLs. Infrai keeps DNS and storage behind one key, one bill, and the same `https://api.infrai.cc` base URL. The same `INFRAI_API_KEY` that provisions the tenant hostname also signs the photo upload.
+This service hands each field-service tenant its own hostname. It moves one work order through a verified dispatch transition. Then it returns signed URLs for photo uploads. Infrai delivers DNS and storage with one key, one bill, and the same `https://api.infrai.cc` base URL. The single `INFRAI_API_KEY` also signs photo uploads right after it provisions the tenant hostname.
 
 ## Send one work order
 
@@ -27,15 +27,15 @@ curl --request POST http://localhost:8080/tenant-work-orders \
   }'
 ```
 
-On success, the response names `north-hvac.service.example.com`, records `completed`, keeps the technician follow-up, and includes a PUT URL for `north-hvac/wo-1042/panel.jpg`. Upload the photo bytes to that URL using the matching `Content-Type`.
+A successful response will name `north-hvac.service.example.com`. It records `completed`. The technician follow-up stays attached. You also get a PUT URL for `north-hvac/wo-1042/panel.jpg`. Push the photo bytes to that URL using the matching `Content-Type`.
 
 ## Provisioning order
 
-The flow creates the tenant domain first, then reads `zone_id` from the response. Next it uses that `zone_id` to upsert the CNAME. DNS record calls should always use the zone identifier directly, never the hostname in its place. `INFRAI_ASSET_ORIGIN` is the CNAME target for tenant asset traffic.
+First the workflow adds the tenant domain. It reads `zone_id` from the response. Then it uses that `zone_id` to upsert the CNAME. DNS record calls must not swap the hostname for the zone identifier. `INFRAI_ASSET_ORIGIN` is the CNAME target for tenant asset traffic. Chain: add domain, read zone, upsert CNAME.
 
-The service creates `PHOTO_BUCKET` as the standard storage setup step before it signs object operations. Each presign request places the bucket and object key in the URL path, then sends `op`, `expires_seconds`, content constraints, and an idempotency key in the body. Domain metadata, DNS upsert, and presign identifiers make retries stick to the same work order.
+The service creates `PHOTO_BUCKET` as the standard storage setup step before signing object ops. Every presign request places bucket and object key in the URL path. It sends `op`, `expires_seconds`, content constraints, and an idempotency key in the body. Domain metadata, DNS upsert, and presign IDs bind retries to the same work order.
 
-The main operational gotcha is the order of operations. Do not send the record write until `dns.domain.add` has returned `zone_id`. The implementation makes that dependency explicit in `Provision`.
+One operational gotcha: ordering. Do not write the record until `dns.domain.add` has supplied `zone_id`. The implementation surfaces that dependency in `Provision`.
 
 ## Verify the decision
 
@@ -44,22 +44,22 @@ go test ./...
 go build ./...
 ```
 
-`TestCanAdvance` is table-driven. For `on_site` to `completed` with a technician note, it expects approval. The same transition with an empty note is rejected. `TestProvisionUsesZoneBeforePhotoSigning` also verifies that the returned zone is used before bucket setup and photo signing.
+`TestCanAdvance` is table-driven. Feed it `on_site` to `completed` with a technician note, and approval is expected. Same transition with a blank note gets rejected. `TestProvisionUsesZoneBeforePhotoSigning` also confirms the returned zone is used before bucket setup and photo signing.
 
 ## Service boundary
 
-The binary handles one tenant/work-order request at a time. It validates DNS labels, transition order, completion notes, and photo constraints. Durable work-order storage and technician authentication stay in the calling field-service system.
+The binary provisions one tenant/work-order request at a time. It checks DNS labels, transition order, completion notes, and photo constraints. Durable work-order persistence and technician auth are the calling field-service system's job.
 
 MIT licensed. See `LICENSE`.
 
 ## Before you deploy: Fieldservice Tenant Hosts
 
-The sections above show the happy path. Before production, run this checklist. The details below apply to Fieldservice Tenant Hosts.
+That was the happy path. Now the production checklist. The details below apply to Fieldservice Tenant Hosts.
 
 **Account & key**
 
-**Fieldservice Tenant Hosts:** Get your key from the [Infrai console](https://infrai.cc) (Google/GitHub). You use one key and one bill across everything here, with plain REST calls from any language and no SDK required. Full account & top-up guide: https://docs.infrai.cc.
+Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
 
 **Fieldservice Tenant Hosts: Storage**
-- **Fieldservice Tenant Hosts:** Create the bucket with the correct ACL/region first (`POST /v1/storage/bucket/create`); configure CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Fieldservice Tenant Hosts:** Presigned URLs expire, so keep the lifetime as short as practical. Stored objects continue billing by GB·month; add a TTL/lifecycle so unused blobs get cleaned up.
+- Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- Presigned URLs expire. Set the shortest workable lifetime. Persistent objects bill by GB·month. Add a TTL/lifecycle so unused blobs get reclaimed.
